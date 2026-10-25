@@ -1,4 +1,4 @@
-# credit-card-fraud-ml-detection
+# Credit Card Fraud Detection: Machine Learning, Ensembles, and SHAP Analysis
 
 Code and experiments for evaluating machine learning classifiers, ensemble strategies and SHAP explanations in credit card fraud detection, using a strictly leakage-aware pipeline.
 
