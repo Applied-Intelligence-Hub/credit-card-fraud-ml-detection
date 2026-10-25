@@ -245,8 +245,7 @@ The article is currently under review. Citation details will be added here after
 
 ```bibtex
 @article{ccfd_leakage_aware_2026,
-  title   = {Do Ensembles Pay Off? A Leakage-Aware Comparison of Optimized, Ensemble and
-             SHAP-Explained Classifiers for Credit Card Fraud Detection Across Two Datasets},
+  title   = {Credit Card Fraud Detection: Machine Learning, Ensembles, and SHAP Analysis},
   journal = {SN Computer Science},
   year    = {2026},
   note    = {Under review}
