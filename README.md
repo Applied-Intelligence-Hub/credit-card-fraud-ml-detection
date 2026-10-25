@@ -1,141 +1,260 @@
-# Leakage-aware credit card fraud detection: optimized, ensemble and SHAP-explained classifiers
+# credit-card-fraud-ml-detection
 
-Code for the SN Computer Science article *Do Ensembles Pay Off? A Leakage-Aware Comparison of Optimized, Ensemble and SHAP-Explained Classifiers for Credit Card Fraud Detection Across Two Datasets*.
+Code and experiments for evaluating machine learning classifiers, ensemble strategies and SHAP explanations in credit card fraud detection, using a strictly leakage-aware pipeline.
 
-It reimplements the two dissertation notebooks (`CC_code_2013_ap.ipynb`, `CC_code_2023_ap.ipynb`) as one package, with the same seeds, split, search spaces, thresholds, ensembles and SHAP settings. It also computes the extra analyses reported in the paper and exports the data behind the LaTeX figures.
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 
-## What the pipeline does
+This repository accompanies the article *Do Ensembles Pay Off? A Leakage-Aware Comparison of Optimized, Ensemble and SHAP-Explained Classifiers for Credit Card Fraud Detection Across Two Datasets* (submitted to *SN Computer Science*). It contains the full experimental pipeline, the extra analyses reported in the article and scripts that export the data behind every table and figure.
 
-For each dataset the pipeline runs these stages in order:
+## Contents
 
-1. Load the CSV and cast the types, dropping the DS2 `id` column.
-2. Report data quality: missing values, duplicates and 1.5-IQR outliers.
-3. For DS2 only, match the fraud prevalence to 0.172% before splitting.
-4. Make a stratified 80/20 split with seed 42.
-5. Tune each of the six learners with Optuna/TPE on mean 5-fold CV average precision. All six studies share one seeded sampler, as in the notebooks.
-6. Select a threshold per fold by maximizing F2, then average the fold thresholds.
-7. Refit each learner on the whole training partition and score the holdout once.
-8. Build four ensembles from out-of-fold scores: mean, AP-weighted mean, majority vote (3 of 6) and stacking with an LR meta-learner.
-9. Compute SHAP for the base learners, and for the explanatory proxies of the ensembles.
+- [Overview](#overview)
+- [Main results](#main-results)
+- [Repository layout](#repository-layout)
+- [Installation](#installation)
+- [Data](#data)
+- [Reproducing the experiments](#reproducing-the-experiments)
+- [Outputs](#outputs)
+- [Leakage control](#leakage-control)
+- [Configuration options](#configuration-options)
+- [Tests](#tests)
+- [Reproducibility notes](#reproducibility-notes)
+- [Citation](#citation)
+- [License](#license)
 
-Feature construction, scaling and SMOTE are refitted inside every training fold. Validation folds and the holdout are never resampled. Thresholds and the stacking meta-learner come from training data only.
+## Overview
 
-| Learner | Scaling | Imbalance handling | Trials | SHAP explainer |
-|---|---|---|---|---|
-| Logistic regression | min-max | none (threshold only) | 80 | Linear |
-| SVM (RBF) | min-max | none (threshold only) | 40 | Kernel (decision function) |
-| Random forest | none | class_weight=balanced | 60 | Kernel (log-odds) |
-| XGBoost | none | SMOTE in training folds | 60 | Tree |
-| LightGBM | none | SMOTE in training folds | 60 | Tree |
-| CatBoost | none | auto_class_weights=Balanced | 60 | Tree |
+Fraud is rare, so headline scores in credit card fraud detection depend on the evaluation protocol as much as on the algorithm. This project compares six optimized base classifiers and four ensemble strategies under one protocol. In that protocol, everything that learns from data is fitted on the training partition only, and the holdout set is scored once.
+
+| Component | What is used |
+|---|---|
+| Base learners | Logistic regression, RBF support vector machine, random forest, XGBoost, LightGBM, CatBoost |
+| Ensembles | Mean, AP-weighted mean, majority vote (3 of 6), stacking with a logistic-regression meta-learner |
+| Imbalance handling | SMOTE inside training folds (XGBoost, LightGBM); balanced class weights (RF, CatBoost); threshold only (LR, SVM) |
+| Tuning | Optuna with a TPE sampler, maximizing mean 5-fold cross-validated average precision (AP) |
+| Decision threshold | F2-optimal threshold per fold, averaged over folds and fixed before holdout scoring |
+| Metrics | AP, ROC-AUC, precision, recall, F2, MCC, confusion counts, Wilson 95% intervals |
+| Explainability | SHAP for every base learner (Tree, Linear and Kernel explainers) and explanatory proxies for the ensembles |
+
+Two public datasets are used:
+
+- **DS1**: the 2013 European cardholder dataset, with 284,807 transactions and 0.173% fraud.
+- **DS2**: a 2023 dataset with 568,630 transactions and 50% fraud. Its fraud class is undersampled to 0.172% before splitting, to match DS1.
+
+```mermaid
+flowchart LR
+    A[CSV] --> B[Quality checks<br/>type casting]
+    B --> C{DS2?}
+    C -- yes --> D[Match prevalence<br/>to 0.172%]
+    C -- no --> E
+    D --> E[Stratified 80/20 split]
+    E --> F[5-fold CV on training<br/>FE, scaling, SMOTE per fold]
+    F --> G[Optuna/TPE<br/>mean CV AP]
+    G --> H[F2 thresholds<br/>per fold, averaged]
+    H --> I[Refit on all training data]
+    F --> J[Out-of-fold scores]
+    J --> K[Ensembles and<br/>their thresholds]
+    I --> L[Single holdout pass]
+    K --> L
+    L --> M[Metrics, curves,<br/>SHAP]
+```
+
+## Main results
+
+The table shows holdout AP from the article. Each holdout contains 98 frauds.
+
+| Configuration | DS1 AP | DS2 AP |
+|---|---:|---:|
+| XGBoost | 0.875 | **0.929** |
+| LightGBM | **0.877** | 0.924 |
+| SVM (RBF) | 0.850 | 0.905 |
+| Ensemble: AP-weighted | 0.876 | 0.904 |
+| Ensemble: mean | 0.876 | 0.903 |
+| CatBoost | 0.863 | 0.900 |
+| Random forest | 0.867 | 0.891 |
+| Ensemble: stacking | **0.877** | 0.891 |
+| Logistic regression | 0.742 | 0.782 |
+| Ensemble: majority vote* | 0.706 | 0.718 |
+
+\* Computed from binary votes, so not directly comparable with the score-based values.
+
+Tuned gradient boosting was the most reliable choice on both datasets. No ensemble beat the best single model on DS2. On DS1, stacking only tied LightGBM's AP, and it produced more false alarms at its operating point. Logistic regression reached a ROC-AUC of 0.969 and 0.991 but an AP of only 0.742 and 0.782, which is why AP is the primary criterion. With 98 holdout frauds, the leading configurations differ by a few transactions, within overlapping confidence intervals.
+
+## Repository layout
+
+```
+ccfd/                 Python package
+  config.py           settings, model plan and trial budgets (article defaults)
+  data.py             loading, quality report, prevalence matching, stratified split
+  features.py         log amount, cyclical hour, conditional scaling, fold-local SMOTE
+  models.py           model factory, Optuna search spaces, fold and final fitting
+  optimization.py     Optuna studies, trial tables, CV threshold statistics
+  metrics.py          AP/ROC/P/R/F2/MCC, F2 threshold, confusion counts, Wilson intervals
+  ensembles.py        out-of-fold scores, mean/weighted/majority vote/stacking
+  explain.py          SHAP for base learners and ensemble proxies
+  curves.py           exact PR/ROC export and pgfplots coordinates
+  experiment.py       end-to-end run for one dataset
+  compare.py          cross-dataset ranking and SHAP agreement
+scripts/
+  run_experiment.py         run the pipeline for DS1 or DS2
+  compare_datasets.py       compare two finished runs
+  paper_operating_points.py rebuild the article's operating-point table (no data needed)
+  quicklook.py              PNG quick-look figures from a run
+  make_synthetic.py         synthetic CSVs for smoke tests
+tests/                unit tests
+requirements.txt
+```
 
 ## Installation
 
-```
-python -m venv .venv && source .venv/bin/activate
+```bash
+git clone https://github.com/Applied-Intelligence-Hub/credit-card-fraud-ml-detection.git
+cd credit-card-fraud-ml-detection
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-The notebooks ran on Python 3.8. The package has also been tested on Python 3.13 with current library versions. Results can shift slightly across library versions, mainly SVM probabilities and SHAP sampling.
-
 ## Data
 
-Download the two public datasets:
+The datasets are not redistributed here. Download them from Kaggle and place them in `data/`:
 
-- DS1: https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud (`creditcard.csv`)
-- DS2: https://www.kaggle.com/datasets/nelgiriyewithana/credit-card-fraud-detection-dataset-2023 (`creditcard_2023.csv`)
-
-In the dissertation repository these files are stored with Git LFS. Run `git lfs pull` there, or download them from Kaggle. The loader refuses LFS pointer files with a clear message.
-
-## Running
-
-Each command below runs one stage of the workflow.
-
-Run the full DS1 experiment (several hours, dominated by SVM and boosting tuning):
-
-```
-python scripts/run_experiment.py --dataset ds1 --data data/creditcard_2013.csv --out outputs/ds1
-```
-
-Run the full DS2 experiment (prevalence matched to 0.172%):
-
-```
-python scripts/run_experiment.py --dataset ds2 --data data/creditcard_2023.csv --out outputs/ds2
-```
-
-Compare the two runs (rank correlation, top-k frequency, Jaccard agreement):
-
-```
-python scripts/compare_datasets.py --ds1 outputs/ds1 --ds2 outputs/ds2 --out outputs/compare
-```
-
-Rebuild Table 8 of the paper from the published precision and recall. This needs no data:
-
-```
-python scripts/paper_operating_points.py
-```
-
-Useful flags for `run_experiment.py`:
-
-- `--quick`: 3 trials per learner and light SHAP. This is a smoke test only, not for reporting.
-- `--subsample 0.1`: keeps every fraud and 10% of legitimate rows. Use it only with `--quick` for smoke tests.
-- `--trials-scale 0.5`: halve every Optuna budget.
-- `--no-shap`: skip explanations.
-- `--n-jobs N`: thread count. The defaults follow the notebooks (-1 for DS1, 1 for DS2).
-- `--fix-catboost-eval`: disables CatBoost's best-iteration selection on the CV evaluation set, which the paper lists as a threat to validity.
-- `--dedup`: drops exact duplicate rows before splitting, the other DS1 caveat.
-
-Both corrections are off by default so that the paper's numbers are reproduced.
-
-For a dry run without the real data:
-
-```
-python scripts/make_synthetic.py --out data_synthetic
-python scripts/run_experiment.py --dataset ds1 --data data_synthetic/synthetic_ds1.csv --out outputs/smoke --quick --subsample 0.3
-```
-
-## Outputs (per run)
-
-| File | Content | Paper |
+| Name | Source | Suggested file name |
 |---|---|---|
-| `data_summary.json`, `outliers_per_feature.csv` | quality checks, split sizes | Table 2, Sec. 3.3 |
-| `optuna_trials.csv`, `optimization_summary.csv`, `best_params.json` | every trial, best/median/range/TPE gain, selected values | Fig. 4, Table 5, Table A1 |
-| `holdout_results.csv` | AP, CV SD, ROC-AUC, threshold, P, R, F2, MCC, TP/FP/FN/TN, alerts per 10k, FPR, Wilson CIs | Tables 6-8, Figs. 7-8 |
-| `threshold_stability.csv` | per-fold F2 thresholds, mean and SD | Fig. 9 |
-| `cv_vs_holdout.csv` | CV AP against holdout AP | Sec. 4.6 |
-| `ensemble_internals.csv` | AP weights and stacking-proxy coefficients | Table 9 |
-| `shap/base_*.csv`, `shap/ensemble_*.csv` | top-15 SHAP per learner; ensemble contributions | Figs. 10-12, Tables 10, B2-B3 |
-| `curves/pr_*.csv`, `curves/roc_*.csv` | exact holdout PR and ROC curves | Figs. 5-6 |
-| `latex/pgfplots_coordinates.json` | ready-to-paste `\addplot coordinates` strings (PR, ROC, convergence) | Figs. 4-6 |
-| `holdout_scores.csv`, `oof_scores.csv`, `models/` | raw scores and fitted models | |
+| DS1 | [mlg-ulb/creditcardfraud](https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud) | `data/creditcard_2013.csv` |
+| DS2 | [nelgiriyewithana/credit-card-fraud-detection-dataset-2023](https://www.kaggle.com/datasets/nelgiriyewithana/credit-card-fraud-detection-dataset-2023) | `data/creditcard_2023.csv` |
 
-`compare_datasets.py` writes `cross_dataset_ap.csv` (Table 11, Fig. 14), `*_top5_frequency.csv`, `*_jaccard_top{5,10}.csv` (Fig. 13), `*_rank_matrix.csv` (Fig. 12) and `cross_dataset_stats.json`.
+Both files must keep their original columns, including the binary `Class` label. The `id` column of DS2 is dropped automatically. If a file turns out to be a Git LFS pointer instead of the CSV, the loader stops with a message.
 
-### Replacing the traced curves in the LaTeX source
+## Reproducing the experiments
 
-In the manuscript, the PR and ROC curves in Figs. 5 and 6 were traced from the thesis plots. After a full run, take the strings from `outputs/ds1/latex/pgfplots_coordinates.json` and `outputs/ds2/latex/pgfplots_coordinates.json`. The keys are `pr_LightGBM`, `roc_XGBoost` and so on. Paste each string between the braces of the matching `\addplot ... coordinates {...}` line. The curve keys use the short names LR, SVM, RF, XGBoost, LightGBM and CatBoost.
+These are the three steps for a full reproduction.
 
-## Package layout
+1. Run DS1. This takes several hours, mostly SVM and CatBoost tuning.
 
+   ```bash
+   python scripts/run_experiment.py --dataset ds1 --data data/creditcard_2013.csv --out outputs/ds1
+   ```
+
+2. Run DS2. The prevalence is matched to 0.172% automatically.
+
+   ```bash
+   python scripts/run_experiment.py --dataset ds2 --data data/creditcard_2023.csv --out outputs/ds2
+   ```
+
+3. Run the cross-dataset comparison: rank correlation, top-k SHAP frequency and Jaccard agreement.
+
+   ```bash
+   python scripts/compare_datasets.py --ds1 outputs/ds1 --ds2 outputs/ds2 --out outputs/compare
+   ```
+
+Two scripts help with checking:
+
+- Quick-look figures from a finished run:
+
+  ```bash
+  python scripts/quicklook.py --run outputs/ds1
+  ```
+
+- The operating-point table, rebuilt from the published precision and recall (no data needed):
+
+  ```bash
+  python scripts/paper_operating_points.py
+  ```
+
+To check the installation without the real data (a smoke test that takes minutes, not hours):
+
+```bash
+python scripts/make_synthetic.py --out data_synthetic
+python scripts/run_experiment.py --dataset ds1 --data data_synthetic/synthetic_ds1.csv \
+       --out outputs/smoke --quick --subsample 0.3
 ```
-ccfd/
-  config.py        settings, model plan, trial budgets (paper defaults)
-  data.py          loading, quality report, prevalence matching, stratified split
-  features.py      log amount, cyclical hour, conditional scaling, fold-local SMOTE
-  models.py        model factory, Optuna search spaces, fold and final fitting
-  optimization.py  Optuna studies, trial tables, CV thresholds
-  metrics.py       AP/ROC/P/R/F2/MCC, F2 threshold, confusion counts, Wilson CIs
-  ensembles.py     OOF scores, mean/weighted/majority vote/stacking
-  explain.py       SHAP for base learners and ensemble proxies
-  curves.py        exact PR/ROC export and pgfplots coordinates
-  experiment.py    end-to-end run for one dataset
-  compare.py       cross-dataset ranking and SHAP agreement
-scripts/           command-line entry points
-tests/             unit tests (python -m pytest -q tests)
+
+Synthetic data and `--quick` runs are for testing the code only and must not be used to report results.
+
+## Outputs
+
+Each run writes the following files to its output directory.
+
+| File | Content |
+|---|---|
+| `data_summary.json`, `outliers_per_feature.csv` | missing values, duplicates, IQR outliers, split sizes |
+| `optuna_trials.csv`, `optimization_summary.csv`, `best_params.json` | every trial; best value, trial of the best, median, range, TPE gain; selected hyperparameters |
+| `holdout_results.csv` | AP, CV AP SD, ROC-AUC, threshold, precision, recall, F2, MCC, TP/FP/FN/TN, alerts per 10k, FPR, Wilson intervals |
+| `threshold_stability.csv` | the five per-fold F2 thresholds per learner, with mean and SD |
+| `cv_vs_holdout.csv` | cross-validated AP against holdout AP |
+| `ensemble_internals.csv` | AP-proportional weights and stacking-proxy coefficients |
+| `shap/base_*.csv` | top-15 SHAP features per base learner (mean and SD of absolute values) |
+| `shap/ensemble_*.csv` | raw and normalized SHAP contributions of each base learner within each ensemble |
+| `curves/pr_*.csv`, `curves/roc_*.csv` | exact holdout precision-recall and ROC curves |
+| `latex/pgfplots_coordinates.json` | ready-to-paste `\addplot coordinates {...}` strings (PR, ROC, Optuna convergence) |
+| `holdout_scores.csv`, `oof_scores.csv`, `models/*.pkl` | raw scores and fitted models |
+
+`compare_datasets.py` adds `cross_dataset_ap.csv`, `*_top5_frequency.csv`, `*_top10_frequency.csv`, `*_jaccard_top5.csv`, `*_jaccard_top10.csv`, `*_rank_matrix.csv` and `cross_dataset_stats.json`.
+
+## Leakage control
+
+The pipeline enforces these rules:
+
+- **Prevalence matching before the split.** On DS2 the fraud class is undersampled before splitting, so training and holdout share the same rare-fraud regime.
+- **Fold-local fitting.** Feature construction, min-max scaling and SMOTE are fitted inside every training fold. Validation folds and the holdout are never resampled.
+- **Training-only selection.** Hyperparameters, decision thresholds, ensemble weights, ensemble thresholds and the stacking meta-learner are all chosen from training or out-of-fold data.
+- **One holdout pass.** The holdout is scored once, after refitting on the full training partition. It is also the evaluation sample for SHAP.
+
+Two known caveats are discussed in the article. Both can be switched on as corrections (see below):
+
+- DS1 contains 1,081 exact duplicate rows, which a row-level split can place on both sides.
+- CatBoost selects its best iteration on the evaluation set it receives during cross-validation.
+
+## Configuration options
+
+`scripts/run_experiment.py` accepts these flags:
+
+| Flag | Effect |
+|---|---|
+| `--n-jobs N` | number of threads (defaults follow the original notebooks: -1 for DS1, 1 for DS2) |
+| `--trials-scale F` | multiplies every Optuna budget (defaults: LR 80, SVM 40, others 60) |
+| `--no-shap` | skips the explainability stage |
+| `--fix-catboost-eval` | disables CatBoost best-iteration selection on CV evaluation sets |
+| `--dedup` | drops exact duplicate rows before splitting |
+| `--quick` | 3 trials per learner and light SHAP settings (smoke tests only) |
+| `--subsample F` | keeps every fraud and a fraction F of legitimate rows (smoke tests only) |
+
+The corrections are off by default, so a default run reproduces the published protocol. Every setting is defined in `ccfd/config.py`.
+
+## Tests
+
+```bash
+python -m pytest -q tests
 ```
 
-## Notes
+The tests cover the Wilson intervals, F2 threshold selection, the cyclical time features, train-only scaling, the DS2 prevalence counts (489 frauds kept) and the recovery of the article's confusion counts from the reported precision and recall.
 
-- Ensemble SHAP values describe explanatory proxies on quantile-normalized scores. They are not exact decompositions of the predictive ensembles.
-- Majority vote AP and ROC-AUC are computed from binary decisions and are not comparable with score-based values.
-- Wall-clock times depend heavily on thread settings and hardware, and are not a result of the study.
+## Reproducibility notes
+
+- All random seeds are fixed at 42. The six Optuna studies share one seeded TPE sampler and run in a fixed order (LR, SVM, RF, XGBoost, LightGBM, CatBoost). Changing the order changes the trials each study sees.
+- The original experiments ran on Python 3.8. With newer versions of scikit-learn, SHAP or the boosting libraries, results can differ slightly, mainly in SVM probabilities (Platt scaling) and in KernelExplainer sampling.
+- Ensemble SHAP values describe explanatory proxies built on quantile-normalized scores. They are not exact decompositions of the predictive ensembles.
+- SHAP attributions describe what a fitted model uses. They are not causal statements about fraud, and the anonymized predictors (V1 to V28) carry no business meaning.
+- Wall-clock times depend on hardware and thread settings and are not results of the study.
+
+## Citation
+
+The article is currently under review. Citation details will be added here after publication.
+
+```bibtex
+@article{ccfd_leakage_aware_2026,
+  title   = {Do Ensembles Pay Off? A Leakage-Aware Comparison of Optimized, Ensemble and
+             SHAP-Explained Classifiers for Credit Card Fraud Detection Across Two Datasets},
+  journal = {SN Computer Science},
+  year    = {2026},
+  note    = {Under review}
+}
+```
+
+## License
+
+This project is released under the GNU General Public License v3.0. See [LICENSE](LICENSE).
+
+The datasets are subject to their own licenses and terms on Kaggle. This code is intended for research and education. It is not a production fraud detection system.
